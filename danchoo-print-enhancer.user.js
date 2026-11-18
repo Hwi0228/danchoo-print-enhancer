@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         DANCHOO Print Enhancer
 // @namespace    https://github.com/Hwi0228/danchoo-print-enhancer
-// @version      0.1.0
-// @description  EBS DANCHOO+ 시험지 인쇄 레이아웃 도구
+// @version      0.2.0
+// @description  EBS DANCHOO+ 기존 인쇄 미리보기에 문항 단위 페이지 분할 보정 적용
 // @author       Hwi0228
-// @match        https://ai-plus.ebs.co.kr/*
+// @match        https://ai-plus.ebs.co.kr/mid/xip/solvePaper.ebs*
 // @run-at       document-idle
 // @noframes
 // @grant        none
@@ -13,277 +13,384 @@
 (() => {
   'use strict';
 
-  const HOST_ID = 'dpe-ui-host';
-  const TARGET = 'data-dpe-target';
-  const HIDDEN = 'data-dpe-hidden';
-  const PRINT_CLASS = 'dpe-printing';
-  const PICK_CLASS = 'dpe-picking';
-  const STORE = 'dpe.settings.v1';
-  const DEFAULTS = {
-    paper: 'A4',
-    orientation: 'portrait',
-    columns: '1',
-    fontSize: 11,
-    lineHeight: 1.55,
-    margin: 'normal'
-  };
-  const MARGINS = {
-    narrow: '9mm 9mm 10mm',
-    normal: '14mm 14mm 15mm',
-    wide: '19mm 18mm 20mm'
-  };
+  const VERSION = '0.2.0';
+  const HOST_ID = 'dpe-toolbar-host';
+  const STYLE_ID = 'dpe-layout-styles';
+  const ENABLED_CLASS = 'dpe-layout-enabled';
+  const QUESTION_ATTR = 'data-dpe-question-block';
+  const SETTINGS_KEY = 'dpe.settings.v2';
+  const QUESTION_LEAD = /^\s*(\d{1,2})\s*[.)]\s*\S/;
+  const WRAPPER_TAGS = new Set(['DIV', 'SECTION', 'ARTICLE', 'LI', 'TD', 'TR']);
+  const SCAN_TAGS = 'div,section,article,li,td,tr,p,h1,h2,h3,h4';
+  const MAX_QUESTION_TEXT = 12000;
+  const MAX_ANCESTOR_DEPTH = 10;
 
-  if (location.hostname !== 'ai-plus.ebs.co.kr' || !document.body) return;
-  if (document.getElementById(HOST_ID)) return;
-  const routeMatches = /exam|paper|prbm|itemsearch|lrnstts/i.test(location.pathname);
-  const pageMatches = /시험지|문항 상세/.test((document.body.innerText || '').slice(0, 30000));
-  if (!routeMatches && !pageMatches) return;
+  if (location.hostname !== 'ai-plus.ebs.co.kr') return;
+  if (location.pathname.toLowerCase() !== '/mid/xip/solvepaper.ebs') return;
+  if (!document.body || document.getElementById(HOST_ID)) return;
 
-  let settings = readSettings();
-  let target = null;
-  let picking = false;
+  let enabled = readEnabled();
   let host;
   let shadow;
+  let scanQueued = false;
+  const watchedFrames = new WeakSet();
+  const observedDocuments = new WeakSet();
+  const activeObservers = new Set();
+  let lastStats = { documents: 0, questions: 0, frames: 0 };
 
-  installPrintStyles();
-  buildPanel();
-  window.addEventListener('beforeprint', () => {
-    if (target && target.isConnected) isolateTarget(target);
-  });
-  window.addEventListener('afterprint', restorePage);
-  window.addEventListener('pagehide', restorePage);
+  installStyles(document);
+  buildToolbar();
+  scanAllDocuments();
+  startObserver();
 
-  function readSettings() {
+  window.addEventListener('beforeprint', scanAllDocuments, true);
+  window.addEventListener('afterprint', () => queueScan(), true);
+  window.addEventListener('pagehide', restoreTemporaryState, true);
+
+  function readEnabled() {
     try {
-      const saved = JSON.parse(localStorage.getItem(STORE) || '{}');
-      return { ...DEFAULTS, ...sanitize(saved) };
+      const value = localStorage.getItem(SETTINGS_KEY);
+      return value === null ? true : value === 'true';
     } catch {
-      return { ...DEFAULTS };
+      return true;
     }
   }
 
-  function sanitize(value) {
-    if (!value || typeof value !== 'object') return {};
-    const result = {};
-    if (['A4', 'A5', 'Letter'].includes(value.paper)) result.paper = value.paper;
-    if (['portrait', 'landscape'].includes(value.orientation)) result.orientation = value.orientation;
-    if (['1', '2'].includes(String(value.columns))) result.columns = String(value.columns);
-    if (Number.isFinite(Number(value.fontSize))) result.fontSize = clamp(Number(value.fontSize), 9, 14);
-    if (Number.isFinite(Number(value.lineHeight))) result.lineHeight = clamp(Number(value.lineHeight), 1.2, 1.9);
-    if (['narrow', 'normal', 'wide'].includes(value.margin)) result.margin = value.margin;
-    return result;
-  }
-
-  function saveSettings() {
+  function saveEnabled() {
     try {
-      localStorage.setItem(STORE, JSON.stringify(settings));
+      localStorage.setItem(SETTINGS_KEY, String(enabled));
     } catch {
-      setStatus('설정을 저장하지 못했습니다. 현재 설정은 계속 적용됩니다.');
+      setStatus('설정 저장은 제한됐지만 현재 페이지에는 적용됩니다.');
     }
   }
 
-  function installPrintStyles() {
-    const style = document.createElement('style');
-    style.id = 'dpe-print-styles';
-    style.textContent = [
-      '@media screen {',
-      'body.' + PICK_CLASS + ' *:hover { outline:2px dashed #2563eb !important; outline-offset:2px !important; cursor:crosshair !important; }',
-      '[' + TARGET + '] { outline:2px solid rgba(37,99,235,.55); outline-offset:2px; }',
-      '}',
-      '@media print {',
-      '@page { size:A4 portrait; margin:14mm 14mm 15mm; }',
-      'html, body { width:auto !important; min-width:0 !important; height:auto !important; margin:0 !important; padding:0 !important; overflow:visible !important; background:#fff !important; color:#111 !important; }',
-      'body.' + PRINT_CLASS + ' [' + HIDDEN + '] { display:none !important; }',
-      'body.' + PRINT_CLASS + ' #' + HOST_ID + ' { display:none !important; }',
-      'body.' + PRINT_CLASS + ' [' + TARGET + '] { display:block !important; width:100% !important; max-width:none !important; height:auto !important; max-height:none !important; margin:0 !important; padding:0 !important; overflow:visible !important; border:0 !important; box-shadow:none !important; background:#fff !important; color:#111 !important; font-family:"Noto Sans KR","Malgun Gothic",sans-serif !important; font-size:var(--dpe-font-size,11pt) !important; line-height:var(--dpe-line-height,1.55) !important; column-count:var(--dpe-columns,1) !important; column-gap:9mm !important; column-fill:auto !important; }',
-      'body.' + PRINT_CLASS + ' [' + TARGET + '] * { max-width:100% !important; box-sizing:border-box !important; color:inherit; line-height:inherit; }',
-      'body.' + PRINT_CLASS + ' [' + TARGET + '] img, body.' + PRINT_CLASS + ' [' + TARGET + '] svg, body.' + PRINT_CLASS + ' [' + TARGET + '] canvas, body.' + PRINT_CLASS + ' [' + TARGET + '] video { max-width:100% !important; height:auto !important; break-inside:avoid !important; }',
-      'body.' + PRINT_CLASS + ' [' + TARGET + '] tr, body.' + PRINT_CLASS + ' [' + TARGET + '] figure, body.' + PRINT_CLASS + ' [' + TARGET + '] blockquote, body.' + PRINT_CLASS + ' [' + TARGET + '] pre { break-inside:avoid !important; }',
-      'body.' + PRINT_CLASS + ' [' + TARGET + '] button, body.' + PRINT_CLASS + ' [' + TARGET + '] input, body.' + PRINT_CLASS + ' [' + TARGET + '] select, body.' + PRINT_CLASS + ' [' + TARGET + '] textarea { display:none !important; }',
-      '}'
-    ].join('\n');
-    document.head.appendChild(style);
+  function installStyles(doc) {
+    if (!doc || !doc.head || doc.getElementById(STYLE_ID)) return;
+    const style = doc.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = `
+      html.${ENABLED_CLASS} [${QUESTION_ATTR}] {
+        break-inside: avoid !important;
+        page-break-inside: avoid !important;
+        -webkit-column-break-inside: avoid !important;
+      }
+      html.${ENABLED_CLASS} [${QUESTION_ATTR}] h1,
+      html.${ENABLED_CLASS} [${QUESTION_ATTR}] h2,
+      html.${ENABLED_CLASS} [${QUESTION_ATTR}] h3,
+      html.${ENABLED_CLASS} [${QUESTION_ATTR}] h4 {
+        break-after: avoid-page !important;
+        page-break-after: avoid !important;
+      }
+      html.${ENABLED_CLASS} [${QUESTION_ATTR}] img,
+      html.${ENABLED_CLASS} [${QUESTION_ATTR}] svg,
+      html.${ENABLED_CLASS} [${QUESTION_ATTR}] canvas,
+      html.${ENABLED_CLASS} [${QUESTION_ATTR}] figure,
+      html.${ENABLED_CLASS} [${QUESTION_ATTR}] table,
+      html.${ENABLED_CLASS} [${QUESTION_ATTR}] blockquote,
+      html.${ENABLED_CLASS} [${QUESTION_ATTR}] pre {
+        break-inside: avoid !important;
+        page-break-inside: avoid !important;
+        max-width: 100% !important;
+      }
+      html.${ENABLED_CLASS} [${QUESTION_ATTR}] p,
+      html.${ENABLED_CLASS} [${QUESTION_ATTR}] li {
+        orphans: 2;
+        widows: 2;
+      }
+      @media print {
+        #${HOST_ID} { display:none !important; }
+        html.${ENABLED_CLASS} [${QUESTION_ATTR}] {
+          break-inside: avoid !important;
+          page-break-inside: avoid !important;
+          -webkit-column-break-inside: avoid !important;
+        }
+      }
+    `;
+    doc.head.appendChild(style);
   }
 
-  function buildPanel() {
+  function buildToolbar() {
     host = document.createElement('div');
     host.id = HOST_ID;
-    host.style.cssText = 'all:initial;position:fixed;right:18px;bottom:18px;z-index:2147483647;';
+    host.style.cssText = 'all:initial;position:fixed;right:20px;bottom:20px;z-index:2147483000;';
     shadow = host.attachShadow({ mode: 'open' });
-    shadow.innerHTML = [
-      '<style>',
-      ':host{all:initial;color-scheme:light}*{box-sizing:border-box}.panel{width:292px;border:1px solid #d7dce3;border-radius:14px;background:#fff;color:#18212f;box-shadow:0 10px 36px #0f172a2e;font:13px/1.45 system-ui,sans-serif;overflow:hidden}',
-      '.top{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:#101828;color:white}.brand{font-weight:750}.version{font-size:10px;color:#cbd5e1}.body{padding:12px}.desc{margin:0 0 10px;color:#64748b;font-size:11px}',
-      '.actions{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:7px}button,select,input{font:inherit}button{min-height:35px;border:1px solid #d5dbe5;border-radius:8px;padding:7px 9px;background:#fff;color:#1e293b;cursor:pointer;font-weight:650}button.primary{background:#2455d6;border-color:#2455d6;color:#fff}.status{min-height:30px;margin-top:10px;padding:7px 9px;border-radius:8px;background:#f1f5f9;color:#475569;font-size:11px}',
-      '.settings{display:none;margin-top:12px;padding-top:10px;border-top:1px solid #e2e8f0}.settings.open{display:block}.field{display:grid;grid-template-columns:82px 1fr;align-items:center;gap:8px;margin:8px 0}.field label{font-size:11px;color:#475569}.field select{width:100%;min-height:30px;border:1px solid #d5dbe5;border-radius:7px;padding:4px;background:#fff}.range{display:flex;align-items:center;gap:8px}.range input{width:100%}.range output{min-width:34px;text-align:right;font-size:11px}.foot{display:flex;justify-content:space-between;gap:8px;margin-top:10px}.small{font-size:10px;color:#94a3b8}.collapsed{display:none}.pick-mode{background:#fffbeb;border-color:#f59e0b;color:#92400e}',
-      '@media(max-width:480px){.panel{width:min(292px,calc(100vw - 28px))}}',
-      '</style>',
-      '<section class="panel" aria-label="DANCHOO Print Enhancer">',
-      '<header class="top"><div><div class="brand">DANCHOO Print Enhancer</div><div class="version">v0.1.0</div></div><button id="collapse">접기</button></header>',
-      '<div class="body"><p class="desc">인쇄할 시험지 본문을 선택하고 레이아웃을 조절하세요.</p>',
-      '<div class="actions"><button id="pick">인쇄 영역 선택</button><button class="primary" id="print">인쇄 / PDF 저장</button></div>',
-      '<div class="actions"><button id="toggle">인쇄 설정</button><button id="clear">선택 해제</button></div>',
-      '<div class="status" id="status" role="status" aria-live="polite">먼저 시험지 본문 영역을 선택하세요.</div>',
-      '<div class="settings" id="settings">',
-      '<div class="field"><label for="paper">용지</label><select id="paper"><option>A4</option><option>A5</option><option>Letter</option></select></div>',
-      '<div class="field"><label for="orientation">방향</label><select id="orientation"><option value="portrait">세로</option><option value="landscape">가로</option></select></div>',
-      '<div class="field"><label for="columns">단 구성</label><select id="columns"><option value="1">1단</option><option value="2">2단</option></select></div>',
-      '<div class="field"><label for="fontSize">글자 크기</label><div class="range"><input id="fontSize" type="range" min="9" max="14" step=".5"><output id="fontSizeOut"></output></div></div>',
-      '<div class="field"><label for="lineHeight">줄 간격</label><div class="range"><input id="lineHeight" type="range" min="1.2" max="1.9" step=".05"><output id="lineHeightOut"></output></div></div>',
-      '<div class="field"><label for="margin">여백</label><select id="margin"><option value="narrow">좁게</option><option value="normal">보통</option><option value="wide">넓게</option></select></div>',
-      '<div class="foot"><span class="small">설정은 브라우저에 저장됩니다.</span><button id="reset">초기화</button></div></div>',
-      '<div class="foot"><span class="small">EBS 비공식 개인 도구</span><span class="small">v0.1.0</span></div></div></section>'
-    ].join('');
+    shadow.innerHTML = `
+      <style>
+        :host{all:initial;color-scheme:light;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+        *{box-sizing:border-box}
+        .panel{width:300px;border:1px solid #d7dce3;border-radius:13px;overflow:hidden;background:#fff;color:#18212f;box-shadow:0 10px 34px rgba(15,23,42,.2);font-size:13px;line-height:1.45}
+        .head{display:flex;align-items:center;justify-content:space-between;gap:10px;background:#17243b;color:#fff;padding:10px 12px}
+        .title{font-size:13px;font-weight:750}.version{font-size:10px;color:#cbd5e1}
+        .content{padding:11px 12px}.desc{margin:0 0 9px;color:#64748b;font-size:11px}
+        .row{display:flex;gap:7px}.row button{flex:1}
+        button{min-height:34px;border:1px solid #d5dbe5;border-radius:8px;padding:6px 9px;background:#fff;color:#1e293b;font:inherit;font-weight:650;cursor:pointer}
+        button.primary{background:#2455d6;border-color:#2455d6;color:#fff}
+        button:focus-visible{outline:2px solid #60a5fa;outline-offset:2px}
+        .status{margin-top:9px;padding:8px 9px;border-radius:8px;background:#f1f5f9;color:#475569;font-size:11px;min-height:36px}
+        .state{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700}
+        .dot{width:8px;height:8px;border-radius:50%;background:#16a34a}.off .dot{background:#94a3b8}
+        .hint{margin:8px 0 0;color:#94a3b8;font-size:10px}
+        .minimize{border:0;background:transparent;color:#dbeafe;min-height:26px;padding:3px 5px}
+        .collapsed{display:none}.minimized{width:auto}.minimized .content{display:none}
+        @media(max-width:480px){.panel{width:min(300px,calc(100vw - 36px))}}
+      </style>
+      <section class="panel" aria-label="DANCHOO Print Enhancer">
+        <header class="head">
+          <div><div class="title">DANCHOO Print Enhancer</div><div class="version">v${VERSION} · solvePaper</div></div>
+          <button class="minimize" id="minimize" type="button">접기</button>
+        </header>
+        <div class="content">
+          <p class="desc">EBS의 기존 인쇄 설정과 미리보기는 유지하고, 문항이 페이지·단 사이에서 잘리지 않도록 보정합니다.</p>
+          <div class="row">
+            <button class="primary" id="toggle" type="button">문항 묶음 보정 켜짐</button>
+            <button id="rescan" type="button">다시 검사</button>
+          </div>
+          <div class="status" id="status" role="status" aria-live="polite">페이지 구조를 확인하고 있습니다.</div>
+          <p class="hint">보정 적용 후 EBS의 인쇄 버튼을 그대로 사용하세요. 용지·매수·레이아웃·컬러 설정은 변경하지 않습니다.</p>
+        </div>
+      </section>
+      <button class="collapsed" id="expand" type="button">DPE 인쇄 보정</button>
+    `;
     document.documentElement.appendChild(host);
 
-    const $ = (id) => shadow.getElementById(id);
-    $('pick').addEventListener('click', startPicking);
-    $('print').addEventListener('click', printTarget);
-    $('clear').addEventListener('click', clearTarget);
-    $('toggle').addEventListener('click', () => $('settings').classList.toggle('open'));
-    $('collapse').addEventListener('click', () => shadow.querySelector('.panel').classList.toggle('collapsed'));
-    $('reset').addEventListener('click', () => {
-      settings = { ...DEFAULTS };
-      saveSettings();
-      syncControls();
-      updateTargetStyles();
-      setStatus('인쇄 설정을 기본값으로 되돌렸습니다.');
+    shadow.getElementById('toggle').addEventListener('click', () => {
+      enabled = !enabled;
+      saveEnabled();
+      scanAllDocuments();
+      syncToolbar();
     });
-    ['paper', 'orientation', 'columns', 'margin'].forEach((key) => {
-      $(key).addEventListener('change', (event) => updateSetting(key, event.target.value));
+    shadow.getElementById('rescan').addEventListener('click', () => {
+      scanAllDocuments();
+      setStatus(formatStats(lastStats));
     });
-    ['fontSize', 'lineHeight'].forEach((key) => {
-      $(key).addEventListener('input', (event) => updateSetting(key, Number(event.target.value)));
+    shadow.getElementById('minimize').addEventListener('click', () => {
+      shadow.querySelector('.panel').classList.add('minimized');
+      shadow.getElementById('expand').classList.remove('collapsed');
     });
-    syncControls();
-  }
-
-  function syncControls() {
-    ['paper', 'orientation', 'columns', 'margin', 'fontSize', 'lineHeight'].forEach((key) => {
-      shadow.getElementById(key).value = String(settings[key]);
+    shadow.getElementById('expand').addEventListener('click', () => {
+      shadow.querySelector('.panel').classList.remove('minimized');
+      shadow.getElementById('expand').classList.add('collapsed');
     });
-    shadow.getElementById('fontSizeOut').value = settings.fontSize + 'pt';
-    shadow.getElementById('lineHeightOut').value = settings.lineHeight.toFixed(2);
+    syncToolbar();
   }
 
-  function updateSetting(key, value) {
-    settings = { ...DEFAULTS, ...settings, [key]: value };
-    settings = { ...DEFAULTS, ...sanitize(settings) };
-    saveSettings();
-    syncControls();
-    updateTargetStyles();
+  function syncToolbar() {
+    if (!shadow) return;
+    const button = shadow.getElementById('toggle');
+    button.textContent = enabled ? '문항 묶음 보정 켜짐' : '문항 묶음 보정 꺼짐';
+    button.classList.toggle('primary', enabled);
+    shadow.querySelector('.state')?.classList.toggle('off', !enabled);
   }
 
-  function updateTargetStyles() {
-    if (!target) return;
-    target.style.setProperty('--dpe-font-size', settings.fontSize + 'pt');
-    target.style.setProperty('--dpe-line-height', String(settings.lineHeight));
-    target.style.setProperty('--dpe-columns', settings.columns);
-    const old = document.getElementById('dpe-page-rule');
-    if (old) old.remove();
-    const page = document.createElement('style');
-    page.id = 'dpe-page-rule';
-    page.textContent = '@media print{@page{size:' + settings.paper + ' ' + settings.orientation + ';margin:' + MARGINS[settings.margin] + '}}';
-    document.head.appendChild(page);
+  function startObserver() {
+    observeDocument(document);
   }
 
-  function startPicking() {
-    if (picking) return;
-    picking = true;
-    document.body.classList.add(PICK_CLASS);
-    shadow.getElementById('pick').classList.add('pick-mode');
-    shadow.getElementById('pick').textContent = '본문을 클릭하세요 (Esc 취소)';
-    setStatus('시험지 본문을 감싸는 영역을 클릭하세요.');
-    document.addEventListener('click', onPickClick, true);
-    document.addEventListener('keydown', onPickKey, true);
+  function observeDocument(doc) {
+    if (!doc?.documentElement || observedDocuments.has(doc) || typeof MutationObserver === 'undefined') return;
+    observedDocuments.add(doc);
+    const docObserver = new MutationObserver((records) => {
+      const hasRelevantAddition = records.some((record) =>
+        Array.from(record.addedNodes).some((node) => {
+          if (node === host || node.nodeType !== Node.ELEMENT_NODE) return false;
+          return node.tagName === 'IFRAME' || Boolean(node.querySelector?.('iframe,div,section,article'));
+        })
+      );
+      if (hasRelevantAddition) queueScan();
+    });
+    docObserver.observe(doc.documentElement, { childList: true, subtree: true });
+    activeObservers.add(docObserver);
   }
 
-  function stopPicking() {
-    picking = false;
-    document.body.classList.remove(PICK_CLASS);
-    shadow.getElementById('pick').classList.remove('pick-mode');
-    shadow.getElementById('pick').textContent = '인쇄 영역 선택';
-    document.removeEventListener('click', onPickClick, true);
-    document.removeEventListener('keydown', onPickKey, true);
+  function queueScan() {
+    if (scanQueued) return;
+    scanQueued = true;
+    requestAnimationFrame(() => {
+      scanQueued = false;
+      scanAllDocuments();
+    });
   }
 
-  function onPickKey(event) {
-    if (event.key !== 'Escape') return;
-    event.preventDefault();
-    event.stopPropagation();
-    stopPicking();
-    setStatus('영역 선택을 취소했습니다.');
+  function collectDocuments(attachObservers = true) {
+    const docs = [];
+    const seen = new WeakSet();
+    const visit = (doc) => {
+      if (!doc || seen.has(doc)) return;
+      seen.add(doc);
+      docs.push(doc);
+      let frames = [];
+      try {
+        frames = Array.from(doc.querySelectorAll('iframe'));
+      } catch {
+        return;
+      }
+      for (const frame of frames) {
+        if (!watchedFrames.has(frame)) {
+          watchedFrames.add(frame);
+          frame.addEventListener('load', queueScan, { once: false });
+        }
+        try {
+          const childDoc = frame.contentDocument;
+          if (childDoc && childDoc.location.origin === location.origin) {
+            if (attachObservers) observeDocument(childDoc);
+            visit(childDoc);
+          }
+        } catch {
+          // Cross-origin frames are intentionally left untouched.
+        }
+      }
+    };
+    visit(document);
+    return docs;
   }
 
-  function onPickClick(event) {
-    const path = event.composedPath ? event.composedPath() : [];
-    if (path.includes(host) || host.contains(event.target)) return;
-    const element = event.target instanceof Element ? event.target : event.target.parentElement;
-    if (!element || element === document.body || element === document.documentElement) {
-      setStatus('본문 안쪽을 선택해 주세요.');
-      return;
+  function scanAllDocuments() {
+    const docs = collectDocuments();
+    updateToolbarVisibility();
+    let questions = 0;
+    let frames = Math.max(0, docs.length - 1);
+
+    for (const doc of docs) {
+      if (!doc.documentElement || !doc.body) continue;
+      doc.querySelectorAll('[' + QUESTION_ATTR + ']').forEach((el) => el.removeAttribute(QUESTION_ATTR));
+      installStyles(doc);
+      if (enabled) {
+        doc.documentElement.classList.add(ENABLED_CLASS);
+        const detected = detectQuestionBlocks(doc);
+        questions += detected.length;
+      } else {
+        doc.documentElement.classList.remove(ENABLED_CLASS);
+        doc.querySelectorAll('[' + QUESTION_ATTR + ']').forEach((el) => el.removeAttribute(QUESTION_ATTR));
+      }
     }
-    event.preventDefault();
-    event.stopPropagation();
-    event.stopImmediatePropagation();
-    clearTarget(false);
-    target = element;
-    target.setAttribute(TARGET, '1');
-    updateTargetStyles();
-    stopPicking();
-    setStatus('인쇄 영역을 지정했습니다. 인쇄 버튼을 눌러 확인하세요.');
+
+    lastStats = { documents: docs.length, questions, frames };
+    setStatus(formatStats(lastStats));
+    syncToolbar();
   }
 
-  function clearTarget(showMessage = true) {
-    stopPicking();
-    restorePage();
-    if (target) {
-      target.removeAttribute(TARGET);
-      target.style.removeProperty('--dpe-font-size');
-      target.style.removeProperty('--dpe-line-height');
-      target.style.removeProperty('--dpe-columns');
+  function detectQuestionBlocks(doc) {
+    const nodes = Array.from(doc.querySelectorAll(SCAN_TAGS));
+    const marked = new Set();
+
+    for (const node of nodes) {
+      const number = leadingQuestionNumber(node);
+      if (number === null || isInsideToolbar(node) || !isVisible(node)) continue;
+
+      let current = node;
+      const ownRoots = collectTopLevelQuestionRoots(node);
+      let best = isLikelyWrapper(node) && (ownRoots.length === 0 || (ownRoots.length === 1 && ownRoots[0].number === number)) ? node : null;
+      for (let depth = 0; depth < MAX_ANCESTOR_DEPTH; depth += 1) {
+        const parent = current.parentElement;
+        if (!parent || parent === doc.body || parent === doc.documentElement) break;
+        const roots = collectTopLevelQuestionRoots(parent);
+        if (roots.length !== 1 || roots[0].number !== number) break;
+        if (isLikelyWrapper(parent)) best = parent;
+        current = parent;
+      }
+
+      if (best && isLikelyWrapper(best) && !isNestedQuestionCandidate(best, marked)) {
+        marked.add(best);
+      }
     }
-    target = null;
-    if (showMessage) setStatus('인쇄 영역 선택을 해제했습니다.');
+
+    // A question wrapper may be discovered more than once through its heading and first paragraph.
+    for (const el of marked) el.setAttribute(QUESTION_ATTR, '1');
+    return Array.from(marked);
   }
 
-  function isolateTarget(element) {
-    restorePage();
-    let current = element;
-    while (current && current !== document.body && current.parentElement) {
-      const parent = current.parentElement;
-      Array.from(parent.children).forEach((sibling) => {
-        if (sibling !== current) sibling.setAttribute(HIDDEN, '1');
-      });
-      if (parent === document.body) break;
-      current = parent;
+  function collectTopLevelQuestionRoots(root) {
+    const collectChildren = (parent, depth) => {
+      const found = [];
+      if (depth > 16 || found.length > 40) return found;
+
+      for (const child of Array.from(parent.children)) {
+        if (isIgnoredElement(child) || isInsideToolbar(child)) continue;
+        const number = leadingQuestionNumber(child);
+        const nested = collectChildren(child, depth + 1);
+
+        if (number !== null) {
+          const nestedHasMultipleQuestions = nested.length > 1 || nested.some((item) => item.number !== number);
+          if (nestedHasMultipleQuestions) found.push(...nested);
+          else found.push({ element: child, number });
+        } else {
+          found.push(...nested);
+        }
+
+        if (found.length > 40) return found;
+      }
+      return found;
+    };
+    return collectChildren(root, 0);
+  }
+
+  function leadingQuestionNumber(element) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return null;
+    const raw = typeof element.innerText === 'string' ? element.innerText : element.textContent;
+    const text = String(raw || '').replace(/[\u00a0\u200b]/g, ' ').trim();
+    if (text.length < 4 || text.length > MAX_QUESTION_TEXT) return null;
+    const match = text.match(QUESTION_LEAD);
+    return match ? Number(match[1]) : null;
+  }
+
+  function isLikelyWrapper(element) {
+    if (!element || !WRAPPER_TAGS.has(element.tagName)) return false;
+    if (!isVisible(element)) return false;
+    const text = String(element.innerText || element.textContent || '').trim();
+    if (text.length < 18 || text.length > MAX_QUESTION_TEXT) return false;
+    return element.children.length >= 1 || Boolean(element.querySelector('img,svg,canvas,table,figure'));
+  }
+
+  function isVisible(element) {
+    if (!element || !element.isConnected) return false;
+    if (element.closest('#' + HOST_ID)) return false;
+    const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+    return !style || (style.display !== 'none' && style.visibility !== 'hidden');
+  }
+
+  function isIgnoredElement(element) {
+    return ['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG'].includes(element.tagName);
+  }
+
+  function isInsideToolbar(element) {
+    return Boolean(element.closest('#' + HOST_ID));
+  }
+
+  function isNestedQuestionCandidate(element, candidates) {
+    for (const candidate of candidates) {
+      if (candidate !== element && candidate.contains(element)) return true;
     }
-    document.body.classList.add(PRINT_CLASS);
+    return false;
   }
 
-  function restorePage() {
-    document.querySelectorAll('[' + HIDDEN + ']').forEach((node) => node.removeAttribute(HIDDEN));
-    document.body.classList.remove(PRINT_CLASS);
+  function updateToolbarVisibility() {
+    if (!host || !document.body) return;
+    const text = String(document.body.innerText || '');
+    const previewLabels = ['인쇄', '대상', '페이지', '매수', '레이아웃', '컬러'];
+    const ebsPrintDialogOpen = previewLabels.every((label) => text.includes(label));
+    host.style.display = ebsPrintDialogOpen ? 'none' : '';
   }
 
-  function printTarget() {
-    if (!target || !target.isConnected) {
-      setStatus('먼저 인쇄할 본문 영역을 선택하세요.');
-      startPicking();
-      return;
+  function formatStats(stats) {
+    if (!enabled) return '보정이 꺼져 있습니다. EBS 기본 인쇄 설정만 사용합니다.';
+    if (stats.questions > 0) {
+      return `문항 묶음 ${stats.questions}개 감지 · 같은 출처 문서 ${stats.documents}개 검사`;
     }
-    updateTargetStyles();
-    isolateTarget(target);
-    setStatus('인쇄 창을 여는 중입니다. 프린터 또는 PDF 저장을 선택하세요.');
-    requestAnimationFrame(() => window.print());
+    return '문항 블록을 자동 감지하지 못했습니다. EBS 기본 인쇄에는 영향을 주지 않습니다.';
   }
 
   function setStatus(message) {
-    const node = shadow && shadow.getElementById('status');
-    if (node) node.textContent = message;
+    const status = shadow && shadow.getElementById('status');
+    if (status) status.textContent = message;
   }
 
-  function clamp(value, min, max) {
-    return Math.min(max, Math.max(min, value));
+  function restoreTemporaryState() {
+    activeObservers.forEach((item) => item.disconnect());
+    activeObservers.clear();
+    for (const doc of collectDocuments(false)) {
+      if (!doc.documentElement) continue;
+      doc.documentElement.classList.remove(ENABLED_CLASS);
+      doc.querySelectorAll('[' + QUESTION_ATTR + ']').forEach((el) => el.removeAttribute(QUESTION_ATTR));
+    }
   }
 })();
