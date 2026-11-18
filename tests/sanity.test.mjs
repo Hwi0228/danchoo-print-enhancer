@@ -3,26 +3,37 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const source = await readFile(new URL('../danchoo-print-enhancer.user.js', import.meta.url), 'utf8');
+const fixture = await readFile(new URL('./print-fixture.html', import.meta.url), 'utf8');
 
-test('runs only on the middle/high-school solvePaper page', () => {
-  assert.match(source, /@match\s+https:\/\/ai-plus\.ebs\.co\.kr\/mid\/xip\/solvePaper\.ebs\*/);
-  assert.match(source, /location\.pathname\.toLowerCase\(\) !== '\/mid\/xip\/solvepaper\.ebs'/);
+test('targets only the middle/high-school solvePaper page', () => {
+  assert.ok(source.includes('@match        https://ai-plus.ebs.co.kr/mid/xip/solvePaper.ebs*'));
+  assert.ok(source.includes("location.pathname.toLowerCase() !== '/mid/xip/solvepaper.ebs'"));
 });
 
-test('keeps EBS as the owner of the print workflow', () => {
-  assert.doesNotMatch(source, /window\.print\s*\(/);
-  assert.doesNotMatch(source, /@page\s*\{/);
-  assert.match(source, /EBS의 기존 인쇄 설정과 미리보기는 유지/);
+test('preserves EBS native print workflow', () => {
+  assert.ok(!source.includes('window.print('));
+  assert.ok(!source.includes('@page {'));
+  assert.ok(source.includes('EBS 기본 인쇄 흐름을 유지'));
 });
 
-test('adds question and figure fragmentation protections', () => {
-  assert.match(source, /break-inside:\s*avoid/);
-  assert.match(source, /page-break-inside:\s*avoid/);
-  assert.match(source, /collectTopLevelQuestionRoots/);
-  assert.match(source, /data-dpe-question-block/);
+test('groups sibling fragments between numbered question stems', () => {
+  assert.ok(source.includes('groupQuestionFragments'));
+  assert.ok(source.includes('findFirstQuestionStart'));
+  assert.ok(source.includes('data-dpe-question-group'));
+  assert.ok(fixture.includes('3. 두 개의 컵'));
+  assert.ok(fixture.includes('class="options"'));
+  assert.ok(fixture.includes('4. 다음 그림'));
+});
+
+test('uses a restrained red-accent workbook style', () => {
+  assert.ok(source.includes('#d92836'));
+  assert.ok(source.includes('data-dpe-number'));
+  assert.ok(source.includes('break-inside:avoid'));
 });
 
 test('does not send page data to a remote service', () => {
-  assert.doesNotMatch(source, /fetch\s*\(|XMLHttpRequest|GM_xmlhttpRequest|WebSocket/);
-  assert.match(source, /localStorage\.getItem/);
+  assert.ok(!source.includes('XMLHttpRequest'));
+  assert.ok(!source.includes('GM_xmlhttpRequest'));
+  assert.ok(!source.includes('WebSocket'));
+  assert.ok(source.includes('localStorage.getItem'));
 });

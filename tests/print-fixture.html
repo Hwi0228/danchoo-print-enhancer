@@ -1,31 +1,20 @@
 <!doctype html>
-<html lang="ko">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DPE v0.2.0 synthetic print fixture</title>
-  <style>
-    @page { size: A4 portrait; margin: 14mm; }
-    * { box-sizing: border-box; }
-    body { margin: 0; padding: 20px; color: #172033; font: 11pt/1.5 "Malgun Gothic", sans-serif; }
-    .paper { columns: 2; column-gap: 12mm; column-rule: 1px solid #d8dee8; }
-    .question { break-inside: avoid; margin: 0 0 16px; padding: 0 0 10px; border-bottom: 1px solid #e6eaf0; }
-    .question h2 { margin: 0 0 8px; font-size: 11pt; }
-    .diagram, table, .passage { break-inside: avoid; }
-    .diagram { padding: 18px; margin: 8px 0; background: #f1f5f9; text-align: center; border: 1px solid #cbd5e1; }
-    .passage { padding: 12px; border: 1px solid #64748b; }
-    table { width: 100%; border-collapse: collapse; margin: 8px 0; }
-    td, th { border: 1px solid #94a3b8; padding: 4px; text-align: center; }
-  </style>
-</head>
-<body>
-  <header><strong>합성 시험지 레이아웃 테스트</strong> — 실제 EBS 문제를 포함하지 않습니다.</header>
-  <main class="paper">
-    <section class="question"><h2>1. 다음 설명을 읽고 옳은 것을 고르시오.</h2><div class="diagram">도형·그래프가 들어가는 영역</div><p>① 보기 하나 ② 보기 둘 ③ 보기 셋 ④ 보기 넷 ⑤ 보기 다섯</p></section>
-    <section class="question"><h2>2. 다음 자료를 해석하시오.</h2><div class="passage">공통 지문 영역입니다. 지문과 연결된 문항은 가능한 한 같은 페이지에 유지되어야 합니다.</div><p>① 선택지 A ② 선택지 B ③ 선택지 C</p></section>
-    <section class="question"><h2>3. 표를 보고 결과를 설명하시오.</h2><table><tr><th>시간</th><th>0</th><th>1</th><th>2</th></tr><tr><th>값</th><td>4</td><td>7</td><td>9</td></tr></table><p>① 설명 1 ② 설명 2 ③ 설명 3 ④ 설명 4</p></section>
-    <section class="question"><h2>4. 다음 조건을 모두 만족하는 값을 구하시오.</h2><p>긴 문항의 본문이 여러 줄에 걸쳐 이어지며, 그림과 선택지까지 한 묶음으로 구성됩니다.</p><div class="diagram">추가 그림 자리</div><p>① 12 ② 14 ③ 16 ④ 18 ⑤ 20</p></section>
-    <section class="question"><h2>5. 마지막 문항의 설명으로 옳은 것은?</h2><p>페이지 아래쪽에 배치될 수 있는 문항입니다. 문항 전체를 다음 페이지로 옮기는 것이 중간에 자르는 것보다 낫습니다.</p></section>
-  </main>
-</body>
-</html>
+<html lang="ko"><head><meta charset="utf-8"><title>DPE v0.3.0 split-fragment regression fixture</title>
+<style>
+@page{size:A4;margin:15mm}*{box-sizing:border-box}
+body{font:10.5pt/1.55 "Malgun Gothic",sans-serif;color:#171717}
+.columns{columns:2;column-gap:12mm;column-rule:1px solid #ddd}
+.flow{display:block}.fragment{break-inside:avoid}
+.question-group{break-inside:avoid;border-left:3px solid #d92836;padding-left:9px;margin:0 0 15px}
+.question-group:before{content:attr(data-dpe-number);background:#d92836;color:#fff;padding:1px 6px;font-weight:bold}
+.options{padding:8px 0 0 4px}.diagram{height:95px;background:#f2f2f2;border:1px solid #ddd;text-align:center;padding:30px}
+</style></head><body>
+<h1>DPE synthetic regression fixture</h1>
+<main class="columns"><div class="flow">
+<div class="fragment"><p>1. 첫 번째 문항의 본문입니다.</p></div><div class="fragment"><p>① 선택지 가　② 선택지 나　③ 선택지 다</p></div>
+<div class="fragment"><p>2. 두 번째 문항의 본문입니다.</p></div><div class="fragment"><p>① 선택지 가　② 선택지 나</p></div>
+<div class="fragment"><p>3. 두 개의 컵 A, B에 같은 양의 물을 넣고 A는 뚜껑을 덮고 B는 덮지 않았다. 두</p></div>
+<div class="fragment"><div class="diagram">문항 3 그래프·그림 영역</div></div>
+<div class="fragment"><p class="options">① (가)고체　(나)액체　(다)기체<br>② (가)고체+액체　(나)고체　(다)액체</p></div>
+<div class="fragment"><p>4. 다음 그림에 대한 설명으로 옳은 것은?</p></div><div class="fragment"><p>① 선택지 가　② 선택지 나</p></div>
+</div></main></body></html>

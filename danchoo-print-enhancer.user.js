@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         DANCHOO Print Enhancer
 // @namespace    https://github.com/Hwi0228/danchoo-print-enhancer
-// @version      0.2.0
-// @description  EBS DANCHOO+ 기존 인쇄 미리보기에 문항 단위 페이지 분할 보정 적용
+// @version      0.3.0
+// @description  EBS DANCHOO+ 문항 그룹화 및 레드 포인트 인쇄 레이아웃
 // @author       Hwi0228
 // @match        https://ai-plus.ebs.co.kr/mid/xip/solvePaper.ebs*
 // @run-at       document-idle
@@ -13,11 +13,13 @@
 (() => {
   'use strict';
 
-  const VERSION = '0.2.0';
+  const VERSION = '0.3.0';
   const HOST_ID = 'dpe-toolbar-host';
   const STYLE_ID = 'dpe-layout-styles';
   const ENABLED_CLASS = 'dpe-layout-enabled';
   const QUESTION_ATTR = 'data-dpe-question-block';
+  const GROUP_ATTR = 'data-dpe-question-group';
+  const GROUP_CLASS = 'dpe-question-group';
   const SETTINGS_KEY = 'dpe.settings.v2';
   const QUESTION_LEAD = /^\s*(\d{1,2})\s*[.)]\s*\S/;
   const WRAPPER_TAGS = new Set(['DIV', 'SECTION', 'ARTICLE', 'LI', 'TD', 'TR']);
@@ -69,37 +71,58 @@
     const style = doc.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
-      html.${ENABLED_CLASS} [${QUESTION_ATTR}] {
+      html.${ENABLED_CLASS} [${GROUP_ATTR}] {
+        display: block !important;
+        position: relative;
+        box-sizing: border-box;
+        margin: 0 0 15px !important;
+        padding: 0 0 9px 10px !important;
+        border-left: 3px solid #d92836 !important;
+        border-bottom: 1px solid #e5e7eb !important;
         break-inside: avoid !important;
         page-break-inside: avoid !important;
         -webkit-column-break-inside: avoid !important;
+        color: #171717;
       }
-      html.${ENABLED_CLASS} [${QUESTION_ATTR}] h1,
-      html.${ENABLED_CLASS} [${QUESTION_ATTR}] h2,
-      html.${ENABLED_CLASS} [${QUESTION_ATTR}] h3,
-      html.${ENABLED_CLASS} [${QUESTION_ATTR}] h4 {
+      html.${ENABLED_CLASS} [${GROUP_ATTR}]::before {
+        content: attr(data-dpe-number);
+        display: inline-block;
+        margin: 0 7px 4px -10px;
+        padding: 1px 6px;
+        border-radius: 2px;
+        background: #d92836;
+        color: #fff;
+        font: 700 9pt/1.5 Arial, sans-serif;
+        vertical-align: baseline;
+      }
+      html.${ENABLED_CLASS} [${GROUP_ATTR}] h1,
+      html.${ENABLED_CLASS} [${GROUP_ATTR}] h2,
+      html.${ENABLED_CLASS} [${GROUP_ATTR}] h3,
+      html.${ENABLED_CLASS} [${GROUP_ATTR}] h4 {
+        color: #171717 !important;
+        font-weight: 700 !important;
         break-after: avoid-page !important;
         page-break-after: avoid !important;
       }
-      html.${ENABLED_CLASS} [${QUESTION_ATTR}] img,
-      html.${ENABLED_CLASS} [${QUESTION_ATTR}] svg,
-      html.${ENABLED_CLASS} [${QUESTION_ATTR}] canvas,
-      html.${ENABLED_CLASS} [${QUESTION_ATTR}] figure,
-      html.${ENABLED_CLASS} [${QUESTION_ATTR}] table,
-      html.${ENABLED_CLASS} [${QUESTION_ATTR}] blockquote,
-      html.${ENABLED_CLASS} [${QUESTION_ATTR}] pre {
+      html.${ENABLED_CLASS} [${GROUP_ATTR}] img,
+      html.${ENABLED_CLASS} [${GROUP_ATTR}] svg,
+      html.${ENABLED_CLASS} [${GROUP_ATTR}] canvas,
+      html.${ENABLED_CLASS} [${GROUP_ATTR}] figure,
+      html.${ENABLED_CLASS} [${GROUP_ATTR}] table,
+      html.${ENABLED_CLASS} [${GROUP_ATTR}] blockquote,
+      html.${ENABLED_CLASS} [${GROUP_ATTR}] pre {
         break-inside: avoid !important;
         page-break-inside: avoid !important;
         max-width: 100% !important;
       }
-      html.${ENABLED_CLASS} [${QUESTION_ATTR}] p,
-      html.${ENABLED_CLASS} [${QUESTION_ATTR}] li {
+      html.${ENABLED_CLASS} [${GROUP_ATTR}] p,
+      html.${ENABLED_CLASS} [${GROUP_ATTR}] li {
         orphans: 2;
         widows: 2;
       }
       @media print {
         #${HOST_ID} { display:none !important; }
-        html.${ENABLED_CLASS} [${QUESTION_ATTR}] {
+        html.${ENABLED_CLASS} [${GROUP_ATTR}] {
           break-inside: avoid !important;
           page-break-inside: avoid !important;
           -webkit-column-break-inside: avoid !important;
@@ -140,9 +163,9 @@
           <button class="minimize" id="minimize" type="button">접기</button>
         </header>
         <div class="content">
-          <p class="desc">EBS의 기존 인쇄 설정과 미리보기는 유지하고, 문항이 페이지·단 사이에서 잘리지 않도록 보정합니다.</p>
+          <p class="desc">EBS 기본 인쇄 흐름을 유지하면서 문항 본문·선택지 그룹화와 레드 포인트 편집 스타일을 적용합니다.</p>
           <div class="row">
-            <button class="primary" id="toggle" type="button">문항 묶음 보정 켜짐</button>
+            <button class="primary" id="toggle" type="button">문항 편집 보정 켜짐</button>
             <button id="rescan" type="button">다시 검사</button>
           </div>
           <div class="status" id="status" role="status" aria-live="polite">페이지 구조를 확인하고 있습니다.</div>
@@ -177,7 +200,7 @@
   function syncToolbar() {
     if (!shadow) return;
     const button = shadow.getElementById('toggle');
-    button.textContent = enabled ? '문항 묶음 보정 켜짐' : '문항 묶음 보정 꺼짐';
+    button.textContent = enabled ? '문항 묶음 보정 켜짐' : '문항 편집 보정 꺼짐';
     button.classList.toggle('primary', enabled);
     shadow.querySelector('.state')?.classList.toggle('off', !enabled);
   }
@@ -247,81 +270,135 @@
   function scanAllDocuments() {
     const docs = collectDocuments();
     updateToolbarVisibility();
-    let questions = 0;
+    let groups = 0;
+    let starts = 0;
     let frames = Math.max(0, docs.length - 1);
+    const diagnostics = [];
 
     for (const doc of docs) {
       if (!doc.documentElement || !doc.body) continue;
-      doc.querySelectorAll('[' + QUESTION_ATTR + ']').forEach((el) => el.removeAttribute(QUESTION_ATTR));
+      unwrapPreviousGroups(doc);
       installStyles(doc);
       if (enabled) {
         doc.documentElement.classList.add(ENABLED_CLASS);
-        const detected = detectQuestionBlocks(doc);
-        questions += detected.length;
+        const result = groupQuestionFragments(doc);
+        groups += result.groups;
+        starts += result.starts;
+        diagnostics.push(result);
       } else {
         doc.documentElement.classList.remove(ENABLED_CLASS);
         doc.querySelectorAll('[' + QUESTION_ATTR + ']').forEach((el) => el.removeAttribute(QUESTION_ATTR));
       }
     }
 
-    lastStats = { documents: docs.length, questions, frames };
+    lastStats = { documents: docs.length, questions: groups, starts, frames, diagnostics };
     setStatus(formatStats(lastStats));
     syncToolbar();
   }
 
-  function detectQuestionBlocks(doc) {
-    const nodes = Array.from(doc.querySelectorAll(SCAN_TAGS));
-    const marked = new Set();
+  function unwrapPreviousGroups(doc) {
+    doc.querySelectorAll('[' + GROUP_ATTR + ']').forEach((wrapper) => {
+      const parent = wrapper.parentNode;
+      if (!parent) return;
+      while (wrapper.firstChild) parent.insertBefore(wrapper.firstChild, wrapper);
+      wrapper.remove();
+    });
+    doc.querySelectorAll('[' + QUESTION_ATTR + ']').forEach((el) => el.removeAttribute(QUESTION_ATTR));
+  }
 
-    for (const node of nodes) {
-      const number = leadingQuestionNumber(node);
-      if (number === null || isInsideToolbar(node) || !isVisible(node)) continue;
+  function groupQuestionFragments(doc) {
+    const candidates = Array.from(doc.querySelectorAll(SCAN_TAGS))
+      .filter((el) => !isInsideToolbar(el) && isVisible(el))
+      .map((el) => ({ element: el, number: leadingQuestionNumber(el) }))
+      .filter((item) => item.number !== null);
 
-      let current = node;
-      const ownRoots = collectTopLevelQuestionRoots(node);
-      let best = isLikelyWrapper(node) && (ownRoots.length === 0 || (ownRoots.length === 1 && ownRoots[0].number === number)) ? node : null;
-      for (let depth = 0; depth < MAX_ANCESTOR_DEPTH; depth += 1) {
-        const parent = current.parentElement;
-        if (!parent || parent === doc.body || parent === doc.documentElement) break;
-        const roots = collectTopLevelQuestionRoots(parent);
-        if (roots.length !== 1 || roots[0].number !== number) break;
-        if (isLikelyWrapper(parent)) best = parent;
-        current = parent;
+    // Keep only the deepest matching element for each numbered stem. This prevents
+    // the same question being counted once for its wrapper and again for its paragraphs.
+    const starts = candidates.filter((item) => {
+      return !Array.from(item.element.children).some((child) => leadingQuestionNumber(child) === item.number);
+    });
+    const uniqueStarts = [];
+    const seen = new WeakSet();
+    for (const item of starts) {
+      if (seen.has(item.element)) continue;
+      seen.add(item.element);
+      uniqueStarts.push(item);
+    }
+
+    const byParent = new Map();
+    for (const item of uniqueStarts) {
+      let branch = item.element;
+      let parent = branch.parentElement;
+      let chosen = null;
+      for (let depth = 0; parent && parent !== doc.body && parent !== doc.documentElement && depth < MAX_ANCESTOR_DEPTH; depth += 1) {
+        if (isSafeFlowContainer(parent)) {
+          const siblings = Array.from(parent.children);
+          const startIndexes = [];
+          for (let i = 0; i < siblings.length; i += 1) {
+            const first = findFirstQuestionStart(siblings[i], uniqueStarts);
+            if (first) startIndexes.push({ index: i, number: first.number, element: first.element });
+          }
+          const distinct = new Set(startIndexes.map((x) => x.number));
+          if (startIndexes.length >= 2 && distinct.size >= 2) {
+            chosen = { parent, siblings, startIndexes };
+            break;
+          }
+        }
+        branch = parent;
+        parent = parent.parentElement;
       }
+      if (!chosen) continue;
+      const key = chosen.parent;
+      if (!byParent.has(key)) byParent.set(key, chosen);
+    }
 
-      if (best && isLikelyWrapper(best) && !isNestedQuestionCandidate(best, marked)) {
-        marked.add(best);
+    let groups = 0;
+    for (const info of byParent.values()) {
+      const { parent, siblings, startIndexes } = info;
+      for (let q = 0; q < startIndexes.length; q += 1) {
+        const current = startIndexes[q];
+        const next = startIndexes[q + 1];
+        const firstIndex = current.index;
+        const endIndex = next ? next.index : siblings.length;
+        const members = siblings.slice(firstIndex, endIndex).filter((node) => {
+          return node.nodeType === Node.ELEMENT_NODE && !isIgnoredElement(node);
+        });
+        if (!members.length || members.some((node) => node.hasAttribute(GROUP_ATTR))) continue;
+        // A question wrapper must contain more than just its numbered heading.
+        if (members.length < 2 && !members[0].querySelector('img,svg,canvas,table,figure')) continue;
+
+        const wrapper = doc.createElement('div');
+        wrapper.className = GROUP_CLASS;
+        wrapper.setAttribute(GROUP_ATTR, '1');
+        wrapper.setAttribute('data-dpe-number', String(current.number));
+        wrapper.setAttribute(QUESTION_ATTR, '1');
+        parent.insertBefore(wrapper, members[0]);
+        for (const member of members) wrapper.appendChild(member);
+        groups += 1;
       }
     }
 
-    // A question wrapper may be discovered more than once through its heading and first paragraph.
-    for (const el of marked) el.setAttribute(QUESTION_ATTR, '1');
-    return Array.from(marked);
+    return {
+      groups,
+      starts: uniqueStarts.length,
+      ungrouped: Math.max(0, uniqueStarts.length - groups),
+      documentTitle: doc.title || '(제목 없는 문서)'
+    };
   }
 
-  function collectTopLevelQuestionRoots(root) {
-    const collectChildren = (parent, depth) => {
-      const found = [];
-      if (depth > 16 || found.length > 40) return found;
+  function findFirstQuestionStart(root, starts) {
+    for (const item of starts) {
+      if (item.element === root || root.contains(item.element)) return item;
+    }
+    return null;
+  }
 
-      for (const child of Array.from(parent.children)) {
-        if (isIgnoredElement(child) || isInsideToolbar(child)) continue;
-        const number = leadingQuestionNumber(child);
-        const nested = collectChildren(child, depth + 1);
-
-        if (number !== null) {
-          const nestedHasMultipleQuestions = nested.length > 1 || nested.some((item) => item.number !== number);
-          if (nestedHasMultipleQuestions) found.push(...nested);
-          else found.push({ element: child, number });
-        } else {
-          found.push(...nested);
-        }
-
-        if (found.length > 40) return found;
-      }
-      return found;
-    };
-    return collectChildren(root, 0);
+  function isSafeFlowContainer(element) {
+    if (!element || !element.children || element.children.length < 2) return false;
+    if (['TABLE', 'TBODY', 'THEAD', 'TFOOT', 'TR', 'UL', 'OL', 'SELECT'].includes(element.tagName)) return false;
+    const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+    if (style && (style.display === 'flex' || style.display === 'inline-flex' || style.display === 'grid' || style.display === 'inline-grid')) return false;
+    return true;
   }
 
   function leadingQuestionNumber(element) {
@@ -374,9 +451,9 @@
   function formatStats(stats) {
     if (!enabled) return '보정이 꺼져 있습니다. EBS 기본 인쇄 설정만 사용합니다.';
     if (stats.questions > 0) {
-      return `문항 묶음 ${stats.questions}개 감지 · 같은 출처 문서 ${stats.documents}개 검사`;
+      return `문항 그룹 ${stats.questions}개 구성 · 번호 시작점 ${stats.starts}개 감지 · 문서 ${stats.documents}개 검사`;
     }
-    return '문항 블록을 자동 감지하지 못했습니다. EBS 기본 인쇄에는 영향을 주지 않습니다.';
+    return '문항 그룹을 구성하지 못했습니다. 현재 EBS 문서 구조에서는 자동 그룹화가 제한됩니다.';
   }
 
   function setStatus(message) {
