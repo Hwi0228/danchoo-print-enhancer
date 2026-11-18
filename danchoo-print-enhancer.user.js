@@ -212,14 +212,17 @@
   function observeDocument(doc) {
     if (!doc?.documentElement || observedDocuments.has(doc) || typeof MutationObserver === 'undefined') return;
     observedDocuments.add(doc);
+    // Only rescan automatically for newly inserted frames. Grouping itself moves
+    // sibling nodes and would otherwise trigger an observer -> unwrap -> regroup loop.
+    // The initial load, iframe load, manual rescan, and beforeprint hooks cover content.
     const docObserver = new MutationObserver((records) => {
-      const hasRelevantAddition = records.some((record) =>
-        Array.from(record.addedNodes).some((node) => {
-          if (node === host || node.nodeType !== Node.ELEMENT_NODE) return false;
-          return node.tagName === 'IFRAME' || Boolean(node.querySelector?.('iframe,div,section,article'));
-        })
+      const hasNewFrame = records.some((record) =>
+        Array.from(record.addedNodes).some((node) =>
+          node.nodeType === Node.ELEMENT_NODE &&
+          (node.tagName === 'IFRAME' || Boolean(node.querySelector?.('iframe')))
+        )
       );
-      if (hasRelevantAddition) queueScan();
+      if (hasNewFrame) queueScan();
     });
     docObserver.observe(doc.documentElement, { childList: true, subtree: true });
     activeObservers.add(docObserver);
