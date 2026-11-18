@@ -28,7 +28,7 @@ test('groups sibling fragments between numbered question stems', () => {
 test('uses a restrained red-accent workbook style', () => {
   assert.ok(source.includes('#d92836'));
   assert.ok(source.includes('data-dpe-number'));
-  assert.ok(source.includes('break-inside:avoid'));
+  assert.ok(source.includes('break-inside: avoid'));
 });
 
 test('does not send page data to a remote service', () => {
